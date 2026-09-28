@@ -1,0 +1,28 @@
+@host = http://localhost:5080
+
+### Saúde
+GET {{host}}/health
+
+### Cardápio
+GET {{host}}/menu
+
+### Criar pedido (TDD 07)
+POST {{host}}/orders
+
+### Copie o id retornado acima para orderId
+@orderId = 00000000-0000-0000-0000-000000000000
+
+### Adicionar dois cheeseburgers (TDD 01 + 08)
+POST {{host}}/orders/{{orderId}}/items
+Content-Type: application/json
+
+{
+  "productId": "11111111-1111-1111-1111-111111111111",
+  "quantity": 2
+}
+
+### Consultar (TDD 10)
+GET {{host}}/orders/{{orderId}}
+
+### Finalizar (TDD 05 + 09)
+POST {{host}}/orders/{{orderId}}/checkout
