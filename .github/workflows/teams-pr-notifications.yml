@@ -1,0 +1,253 @@
+name: Teams PR Notifications
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, closed]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  notify:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Teams Thread Identifier
+        id: thread_lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          COMMENT=$(gh api repos/$REPO/issues/$PR_NUMBER/comments --jq '.[] | select(.body | startswith("<!-- teams_thread_id:")) | .body' | tail -n 1)
+          if [ -n "$COMMENT" ]; then
+            MSG_ID=$(echo "$COMMENT" | sed -n 's/<!-- teams_thread_id:\(.*\) -->/\1/p')
+            echo "thread_id=$MSG_ID" >> $GITHUB_OUTPUT
+          else
+            echo "thread_id=" >> $GITHUB_OUTPUT
+          fi
+
+      # 1. PR Aberto / Ready for Review
+      - name: Notify PR Ready for Review
+        if: (github.event.action == 'opened' || github.event.action == 'ready_for_review') && steps.thread_lookup.outputs.thread_id == ''
+        env:
+          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg title "$PR_TITLE" \
+            --arg url "$PR_URL" \
+            --arg author "$PR_AUTHOR" \
+            --arg branch "$PR_BRANCH" \
+            --arg base "$BASE_BRANCH" \
+            '{
+              "type": "message",
+              "attachments": [
+                {
+                  "contentType": "application/vnd.microsoft.card.adaptive",
+                  "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                      {
+                        "type": "TextBlock",
+                        "text": "📢 Pull Request Ready for Review",
+                        "weight": "Bolder",
+                        "size": "Medium",
+                        "color": "Accent"
+                      },
+                      {
+                        "type": "TextBlock",
+                        "text": "Hey <at>Devs</at>, please review this pull request:",
+                        "wrap": true
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          { "title": "Title:", "value": $title },
+                          { "title": "Author:", "value": $author },
+                          { "title": "Branch:", "value": ($branch + " → " + $base) }
+                        ]
+                      }
+                    ],
+                    "actions": [
+                      {
+                        "type": "Action.OpenUrl",
+                        "title": "Review on GitHub",
+                        "url": $url
+                      }
+                    ],
+                    "msteams": {
+                      "entities": [
+                        {
+                          "type": "mention",
+                          "text": "<at>Devs</at>",
+                          "mentioned": {
+                            "id": "channel",
+                            "name": "Devs"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK")
+          HTTP_BODY=$(echo "$RESPONSE" | sed '$d')
+          TEAMS_ID=$(echo "$HTTP_BODY" | jq -r '.id // empty')
+          [ -z "$TEAMS_ID" ] && TEAMS_ID="pr-${PR_NUMBER}"
+          gh api repos/$REPO/issues/$PR_NUMBER/comments -f body="<!-- teams_thread_id:$TEAMS_ID -->"
+
+      # 2. Review Submetido
+      - name: Notify Review Submitted
+        if: github.event_name == 'pull_request_review'
+        env:
+          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEWER: ${{ github.event.review.user.login }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          PARENT_ID: ${{ steps.thread_lookup.outputs.thread_id }}
+        run: |
+          case "$REVIEW_STATE" in
+            "approved") STATUS="✅ Approved" ;;
+            "changes_requested") STATUS="⚠️ Changes Requested" ;;
+            "commented") STATUS="💬 Comments Added" ;;
+            *) STATUS="ℹ️ Review Submitted ($REVIEW_STATE)" ;;
+          esac
+
+          PAYLOAD=$(jq -n \
+            --arg status "$STATUS" \
+            --arg reviewer "$REVIEWER" \
+            --arg title "$PR_TITLE" \
+            --arg url "$PR_URL" \
+            --arg body "${REVIEW_BODY:-No additional comments provided.}" \
+            --arg parentId "$PARENT_ID" \
+            '{
+              "type": "message",
+              "parentMessageId": $parentId,
+              "attachments": [
+                {
+                  "contentType": "application/vnd.microsoft.card.adaptive",
+                  "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                      {
+                        "type": "TextBlock",
+                        "text": ("📋 Review Update: " + $status),
+                        "weight": "Bolder",
+                        "size": "Medium"
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          { "title": "Reviewer:", "value": $reviewer },
+                          { "title": "Decision:", "value": $status },
+                          { "title": "Pull Request:", "value": $title }
+                        ]
+                      },
+                      {
+                        "type": "TextBlock",
+                        "text": ("**Feedback:**\n" + $body),
+                        "wrap": true
+                      }
+                    ],
+                    "actions": [
+                      {
+                        "type": "Action.OpenUrl",
+                        "title": "View Review",
+                        "url": $url
+                      }
+                    ]
+                  }
+                }
+              ]
+            }')
+
+          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK"
+
+      # 3. PR Mesclado ou Fechado
+      - name: Notify PR Closed / Merged
+        if: github.event_name == 'pull_request' && github.event.action == 'closed'
+        env:
+          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          IS_MERGED: ${{ github.event.pull_request.merged }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          ACTOR: ${{ github.actor }}
+          PARENT_ID: ${{ steps.thread_lookup.outputs.thread_id }}
+        run: |
+          if [ "$IS_MERGED" = "true" ]; then
+            STATUS="🎉 Merged"
+            MESSAGE="The pull request was successfully merged."
+          else
+            STATUS="❌ Closed"
+            MESSAGE="The pull request was closed without merging."
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg status "$STATUS" \
+            --arg msg "$MESSAGE" \
+            --arg actor "$ACTOR" \
+            --arg title "$PR_TITLE" \
+            --arg url "$PR_URL" \
+            --arg parentId "$PARENT_ID" \
+            '{
+              "type": "message",
+              "parentMessageId": $parentId,
+              "attachments": [
+                {
+                  "contentType": "application/vnd.microsoft.card.adaptive",
+                  "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                      {
+                        "type": "TextBlock",
+                        "text": ("PR " + $status),
+                        "weight": "Bolder",
+                        "size": "Medium"
+                      },
+                      {
+                        "type": "TextBlock",
+                        "text": $msg,
+                        "wrap": true
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          { "title": "Closed By:", "value": $actor },
+                          { "title": "Pull Request:", "value": $title }
+                        ]
+                      }
+                    ],
+                    "actions": [
+                      {
+                        "type": "Action.OpenUrl",
+                        "title": "View Pull Request",
+                        "url": $url
+                      }
+                    ]
+                  }
+                }
+              ]
+            }')
+
+          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK"

@@ -8,7 +8,7 @@ public sealed class Order
     public bool IsConfirmed { get; private set; }
 
     // Etapa 1: incluir um item com preço e quantidade positivos.
-    public void AddItem(string name, decimal unitPrice, int quantity) =>
+    public void AddItem(string product, decimal price, int quantity) =>
         throw new NotImplementedException();
 
     // Etapa 2: somar preço × quantidade de todas as linhas.
