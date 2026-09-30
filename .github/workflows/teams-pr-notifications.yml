@@ -2,247 +2,108 @@ name: Teams PR Notifications
 
 on:
   pull_request:
-    types: [opened, ready_for_review, closed]
-  pull_request_review:
-    types: [submitted]
+    types:
+      - ready_for_review
+      - review_requested
+      - closed
 
-permissions:
-  pull-requests: write
-  contents: read
+  pull_request_review:
+    types:
+      - submitted
 
 jobs:
-  notify:
-    if: github.event.pull_request.draft == false
+  notify-pr-opened:
+    if: github.event_name == 'pull_request' && github.event.action == 'ready_for_review'
+
     runs-on: ubuntu-latest
+
     steps:
-      # 1. PR Aberto / Ready for Review
-      - name: Notify PR Ready for Review
-        if: github.event.action == 'opened' || github.event.action == 'ready_for_review'
-        env:
-          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+      - name: Notify Teams - PR Ready For Review
         run: |
-          PAYLOAD=$(jq -n \
-            --arg title "$PR_TITLE" \
-            --arg url "$PR_URL" \
-            --arg author "$PR_AUTHOR" \
-            --arg branch "$PR_BRANCH" \
-            --arg base "$BASE_BRANCH" \
-            '{
-              "type": "message",
-              "attachments": [
-                {
-                  "contentType": "application/vnd.microsoft.card.adaptive",
-                  "content": {
-                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                    "type": "AdaptiveCard",
-                    "version": "1.4",
-                    "body": [
-                      {
-                        "type": "TextBlock",
-                        "text": "📢 Pull Request Ready for Review",
-                        "weight": "Bolder",
-                        "size": "Medium",
-                        "color": "Accent"
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": "Hey <at>Devs</at>, please review this pull request:",
-                        "wrap": true
-                      },
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          { "title": "Title:", "value": $title },
-                          { "title": "Author:", "value": $author },
-                          { "title": "Branch:", "value": ($branch + " → " + $base) },
-                          { "title": "Status:", "value": "⏳ In Review" }
-                        ]
-                      }
-                    ],
-                    "actions": [
-                      {
-                        "type": "Action.OpenUrl",
-                        "title": "Review on GitHub",
-                        "url": $url
-                      }
-                    ],
-                    "msteams": {
-                      "entities": [
-                        {
-                          "type": "mention",
-                          "text": "<at>Devs</at>",
-                          "mentioned": {
-                            "id": "channel",
-                            "name": "Devs"
-                          }
-                        }
-                      ]
-                    }
-                  }
-                }
-              ]
-            }')
+          curl -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "event":"pr_opened",
+            "repository":"${{ github.repository }}",
+            "prNumber":"${{ github.event.pull_request.number }}",
+            "title":"${{ github.event.pull_request.title }}",
+            "author":"${{ github.event.pull_request.user.login }}",
+            "sourceBranch":"${{ github.event.pull_request.head.ref }}",
+            "targetBranch":"${{ github.event.pull_request.base.ref }}",
+            "url":"${{ github.event.pull_request.html_url }}"
+          }'
 
-          echo "Sending payload to Teams..."
-          RESPONSE=$(curl -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK" -w "\nHTTP_STATUS: %{http_code}\n")
-          echo "$RESPONSE"
+  notify-review-requested:
+    if: github.event_name == 'pull_request' && github.event.action == 'review_requested'
 
-      # 2. Review Submetido
-      - name: Notify Review Submitted
-        if: github.event_name == 'pull_request_review'
-        env:
-          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          REVIEW_STATE: ${{ github.event.review.state }}
-          REVIEWER: ${{ github.event.review.user.login }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          REVIEW_BODY: ${{ github.event.review.body }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify Teams - Review Requested
         run: |
-          case "$REVIEW_STATE" in
-            "approved") STATUS="✅ Approved" ;;
-            "changes_requested") STATUS="⚠️ Changes Requested" ;;
-            "commented") STATUS="💬 Comments Added" ;;
-            *) STATUS="ℹ️ Review Submitted ($REVIEW_STATE)" ;;
-          esac
+          curl -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "event":"review_requested",
+            "repository":"${{ github.repository }}",
+            "prNumber":"${{ github.event.pull_request.number }}",
+            "title":"${{ github.event.pull_request.title }}",
+            "requestedReviewer":"${{ github.event.requested_reviewer.login }}",
+            "url":"${{ github.event.pull_request.html_url }}"
+          }'
 
-          PAYLOAD=$(jq -n \
-            --arg status "$STATUS" \
-            --arg reviewer "$REVIEWER" \
-            --arg title "$PR_TITLE" \
-            --arg url "$PR_URL" \
-            --arg body "${REVIEW_BODY:-No additional comments provided.}" \
-            '{
-              "type": "message",
-              "attachments": [
-                {
-                  "contentType": "application/vnd.microsoft.card.adaptive",
-                  "content": {
-                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                    "type": "AdaptiveCard",
-                    "version": "1.4",
-                    "body": [
-                      {
-                        "type": "TextBlock",
-                        "text": ("📋 Review Update: " + $status),
-                        "weight": "Bolder",
-                        "size": "Medium"
-                      },
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          { "title": "Reviewer:", "value": $reviewer },
-                          { "title": "Decision:", "value": $status },
-                          { "title": "Pull Request:", "value": $title }
-                        ]
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": ("**Feedback:**\n" + $body),
-                        "wrap": true
-                      }
-                    ],
-                    "actions": [
-                      {
-                        "type": "Action.OpenUrl",
-                        "title": "View Review",
-                        "url": $url
-                      }
-                    ]
-                  }
-                }
-              ]
-            }')
+  notify-approved:
+    if: github.event_name == 'pull_request_review' && github.event.review.state == 'approved'
 
-          echo "Sending review to Teams..."
-          RESPONSE=$(curl -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK" -w "\nHTTP_STATUS: %{http_code}\n")
-          echo "$RESPONSE"
+    runs-on: ubuntu-latest
 
-      # 3. Merge / Fechamento do PR
-      - name: Notify PR Closed or Merged
-        if: github.event_name == 'pull_request' && github.event.action == 'closed'
-        env:
-          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          IS_MERGED: ${{ github.event.pull_request.merged }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          ACTOR: ${{ github.actor }}
+    steps:
+      - name: Notify Teams - Approved
         run: |
-          if [ "$IS_MERGED" = "true" ]; then
-            HEADER="✅ Pull Request Merged"
-            STATUS_LABEL="🎉 Merged"
-            COLOR="Good"
-            DESC="The pull request has been merged into '$BASE_BRANCH'."
-          else
-            HEADER="❌ Pull Request Closed"
-            STATUS_LABEL="❌ Closed / Cancelled"
-            COLOR="Attention"
-            DESC="The pull request was closed without merging."
-          fi
+          curl -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "event":"approved",
+            "repository":"${{ github.repository }}",
+            "prNumber":"${{ github.event.pull_request.number }}",
+            "title":"${{ github.event.pull_request.title }}",
+            "reviewer":"${{ github.event.review.user.login }}",
+            "url":"${{ github.event.pull_request.html_url }}"
+          }'
 
-          PAYLOAD=$(jq -n \
-            --arg header "$HEADER" \
-            --arg color "$COLOR" \
-            --arg statusLabel "$STATUS_LABEL" \
-            --arg desc "$DESC" \
-            --arg title "$PR_TITLE" \
-            --arg author "$PR_AUTHOR" \
-            --arg branch "$PR_BRANCH" \
-            --arg base "$BASE_BRANCH" \
-            --arg actor "$ACTOR" \
-            --arg url "$PR_URL" \
-            '{
-              "type": "message",
-              "attachments": [
-                {
-                  "contentType": "application/vnd.microsoft.card.adaptive",
-                  "content": {
-                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                    "type": "AdaptiveCard",
-                    "version": "1.4",
-                    "body": [
-                      {
-                        "type": "TextBlock",
-                        "text": $header,
-                        "weight": "Bolder",
-                        "size": "Medium",
-                        "color": $color
-                      },
-                      {
-                        "type": "TextBlock",
-                        "text": $desc,
-                        "wrap": true
-                      },
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          { "title": "Title:", "value": $title },
-                          { "title": "Author:", "value": $author },
-                          { "title": "Action By:", "value": $actor },
-                          { "title": "Branch:", "value": ($branch + " → " + $base) },
-                          { "title": "Status:", "value": $statusLabel }
-                        ]
-                      }
-                    ],
-                    "actions": [
-                      {
-                        "type": "Action.OpenUrl",
-                        "title": "View Pull Request",
-                        "url": $url
-                      }
-                    ]
-                  }
-                }
-              ]
-            }')
+  notify-merged:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
 
-          echo "Sending close/merge status to Teams..."
-          RESPONSE=$(curl -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK" -w "\nHTTP_STATUS: %{http_code}\n")
-          echo "$RESPONSE"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify Teams - Merged
+        run: |
+          curl -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "event":"merged",
+            "repository":"${{ github.repository }}",
+            "prNumber":"${{ github.event.pull_request.number }}",
+            "title":"${{ github.event.pull_request.title }}",
+            "mergedBy":"${{ github.event.pull_request.merged_by.login }}",
+            "url":"${{ github.event.pull_request.html_url }}"
+          }'
+
+  notify-closed:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == false
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify Teams - Closed
+        run: |
+          curl -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "event":"closed",
+            "repository":"${{ github.repository }}",
+            "prNumber":"${{ github.event.pull_request.number }}",
+            "title":"${{ github.event.pull_request.title }}",
+            "url":"${{ github.event.pull_request.html_url }}"
+          }'
